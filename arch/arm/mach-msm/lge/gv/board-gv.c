@@ -12,6 +12,9 @@
  *
  */
 #include <linux/kernel.h>
+#include <linux/clk.h>
+#include <linux/clkdev.h>
+#include <mach/clk-provider.h>
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
