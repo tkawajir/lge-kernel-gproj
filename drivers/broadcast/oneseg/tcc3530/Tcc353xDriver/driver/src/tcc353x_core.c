@@ -2141,10 +2141,10 @@ static I32S Tcc353xColdbootParserUtil(I08U * pData, I32U size,
 	I32U idx;
 	I32U length;
 	I08U *pBin;
-	I08U *daguDataPtr;
-	I08U *dintDataPtr;
-	I08U *randDataPtr;
-	I08U *colOrderDataPtr;
+	I08U *daguDataPtr=NULL;
+	I08U *dintDataPtr=NULL;
+	I08U *randDataPtr=NULL;
+	I08U *colOrderDataPtr=NULL;
 	I32U BootSize[5];
 
 	/*
