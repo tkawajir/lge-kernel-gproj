@@ -36,9 +36,8 @@ extern u64 mdp_max_bw;
 extern u32 mdp_bw_ab_factor;
 extern u32 mdp_bw_ib_factor;
 #define MDP4_BW_AB_DEFAULT_FACTOR (115)	/* 1.15 */
-#define MDP4_BW_IB_DEFAULT_FACTOR (125)	/* 1.25 */
+#define MDP4_BW_IB_DEFAULT_FACTOR (150)	/* 1.5 */
 #define MDP_BUS_SCALE_AB_STEP (0x4000000)
-#define MDP_BUS_SCALE_INIT (0x10000000)
 
 #define MDP4_OVERLAYPROC0_BASE	0x10000
 #define MDP4_OVERLAYPROC1_BASE	0x18000
@@ -308,8 +307,6 @@ struct mdp4_overlay_pipe {
 	uint32 src_format;
 	uint32 src_width;	/* source img width */
 	uint32 src_height;	/* source img height */
-	uint32 prev_src_width;	/* source img width */
-	uint32 prev_src_height;	/* source img height */
 	uint32 is_3d;
 	uint32 src_width_3d;	/* source img width */
 	uint32 src_height_3d;	/* source img height */
@@ -814,7 +811,7 @@ void mdp4_dsi_video_wait4vsync(int cndx);
 void mdp4_mixer_reset(int mixer);
 void mdp4_dsi_cmd_pipe_queue(int cndx, struct mdp4_overlay_pipe *pipe);
 void mdp4_dsi_video_pipe_queue(int cndx, struct mdp4_overlay_pipe *pipe);
-int mdp4_dsi_video_pipe_commit(int cndx, int wait, u32 *release_busy);
+int mdp4_dsi_video_pipe_commit(int cndx, int wait);
 int mdp4_dsi_cmd_pipe_commit(int cndx, int wait, u32 *release_busy);
 void mdp4_dsi_cmd_vsync_ctrl(struct fb_info *info, int enable);
 void mdp4_dsi_video_vsync_ctrl(struct fb_info *info, int enable);
