@@ -162,7 +162,7 @@ struct kgsl_memdesc {
 	void *hostptr; /* kernel virtual address */
 	unsigned long useraddr; /* userspace address */
 	unsigned int gpuaddr;
-	unsigned int physaddr;
+	phys_addr_t physaddr;
 	unsigned int size;
 	unsigned int priv; /* Internal flags and settings */
 	struct scatterlist *sg;
@@ -313,10 +313,10 @@ static inline int timestamp_cmp(unsigned int a, unsigned int b)
 	return ((a > b) && (a - b <= KGSL_TIMESTAMP_WINDOW)) ? 1 : -1;
 }
 
-static inline void
+static inline int
 kgsl_mem_entry_get(struct kgsl_mem_entry *entry)
 {
-	kref_get(&entry->refcount);
+	return kref_get_unless_zero(&entry->refcount);
 }
 
 static inline void

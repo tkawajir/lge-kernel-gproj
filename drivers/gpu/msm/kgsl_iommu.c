@@ -21,6 +21,7 @@
 #include <mach/socinfo.h>
 #include <mach/msm_iomap.h>
 #include <mach/board.h>
+#include <mach/iommu_domains.h>
 #include <stddef.h>
 
 #include "kgsl.h"
@@ -35,7 +36,7 @@
 #include "kgsl_cffdump.h"
 
 
-static struct kgsl_iommu_register_list kgsl_iommuv1_reg[KGSL_IOMMU_REG_MAX] = {
+static struct kgsl_iommu_register_list kgsl_iommuv0_reg[KGSL_IOMMU_REG_MAX] = {
 	{ 0, 0, 0 },				/* GLOBAL_BASE */
 	{ 0x10, 0x0003FFFF, 14 },		/* TTBR0 */
 	{ 0x14, 0x0003FFFF, 14 },		/* TTBR1 */
@@ -48,7 +49,7 @@ static struct kgsl_iommu_register_list kgsl_iommuv1_reg[KGSL_IOMMU_REG_MAX] = {
 	{ 0x2C, 0, 0 },                         /* FSYNR0 */
 };
 
-static struct kgsl_iommu_register_list kgsl_iommuv2_reg[KGSL_IOMMU_REG_MAX] = {
+static struct kgsl_iommu_register_list kgsl_iommuv1_reg[KGSL_IOMMU_REG_MAX] = {
 	{ 0, 0, 0 },				/* GLOBAL_BASE */
 	{ 0x20, 0x00FFFFFF, 14 },		/* TTBR0 */
 	{ 0x28, 0x00FFFFFF, 14 },		/* TTBR1 */
@@ -588,8 +589,10 @@ static void kgsl_iommu_destroy_pagetable(void *mmu_specific_pt)
 {
 	struct kgsl_iommu_pt *iommu_pt = mmu_specific_pt;
 	if (iommu_pt->domain)
-		iommu_domain_free(iommu_pt->domain);
+		msm_unregister_domain(iommu_pt->domain);
+
 	kfree(iommu_pt);
+	iommu_pt = NULL;
 }
 
 /*
@@ -601,7 +604,19 @@ static void kgsl_iommu_destroy_pagetable(void *mmu_specific_pt)
  */
 void *kgsl_iommu_create_pagetable(void)
 {
+	int domain_num;
 	struct kgsl_iommu_pt *iommu_pt;
+
+	struct msm_iova_partition kgsl_partition = {
+		.start = 0,
+		.size = 0xFFFFFFFF,
+	};
+	struct msm_iova_layout kgsl_layout = {
+		.partitions = &kgsl_partition,
+		.npartitions = 1,
+		.client_name = "kgsl",
+		.domain_flags = 0,
+	};
 
 	iommu_pt = kzalloc(sizeof(struct kgsl_iommu_pt), GFP_KERNEL);
 	if (!iommu_pt) {
@@ -611,21 +626,23 @@ void *kgsl_iommu_create_pagetable(void)
 	}
 	/* L2 redirect is not stable on IOMMU v2 */
 	if (msm_soc_version_supports_iommu_v1())
-		iommu_pt->domain = iommu_domain_alloc(&platform_bus_type,
-					MSM_IOMMU_DOMAIN_PT_CACHEABLE);
-	else
-		iommu_pt->domain = iommu_domain_alloc(&platform_bus_type,
-					0);
-	if (!iommu_pt->domain) {
-		KGSL_CORE_ERR("Failed to create iommu domain\n");
-		kfree(iommu_pt);
-		return NULL;
-	} else {
-		iommu_set_fault_handler(iommu_pt->domain,
-			kgsl_iommu_fault_handler, NULL);
+		kgsl_layout.domain_flags = MSM_IOMMU_DOMAIN_PT_CACHEABLE;
+
+	domain_num = msm_register_domain(&kgsl_layout);
+	if (domain_num >= 0) {
+		iommu_pt->domain = msm_get_iommu_domain(domain_num);
+
+		if (iommu_pt->domain) {
+			iommu_set_fault_handler(iommu_pt->domain,
+				kgsl_iommu_fault_handler, NULL);
+
+			return iommu_pt;
+		}
 	}
 
-	return iommu_pt;
+	KGSL_CORE_ERR("Failed to create iommu domain\n");
+	kfree(iommu_pt);
+	return NULL;
 }
 
 /*
@@ -740,29 +757,29 @@ static int _get_iommu_ctxs(struct kgsl_mmu *mmu,
 {
 	struct kgsl_iommu *iommu = mmu->priv;
 	struct kgsl_iommu_unit *iommu_unit = &iommu->iommu_units[unit_id];
-	int i;
+	int i, j;
+	int found_ctx;
 
-	if (data->iommu_ctx_count > KGSL_IOMMU_MAX_DEVS_PER_UNIT) {
-		KGSL_CORE_ERR("Too many iommu devices defined for an "
-				"IOMMU unit\n");
-		return -EINVAL;
-	}
-
-	for (i = 0; i < data->iommu_ctx_count; i++) {
-		if (!data->iommu_ctxs[i].iommu_ctx_name)
-			continue;
+	for (j = 0; j < KGSL_IOMMU_MAX_DEVS_PER_UNIT; j++) {
+		found_ctx = 0;
+		for (i = 0; i < data->iommu_ctx_count; i++) {
+			if (j == data->iommu_ctxs[i].ctx_id) {
+				found_ctx = 1;
+				break;
+			}
+		}
+		if (!found_ctx)
+			break;
+		if (!data->iommu_ctxs[i].iommu_ctx_name) {
+			KGSL_CORE_ERR("Context name invalid\n");
+			return -EINVAL;
+		}
 
 		iommu_unit->dev[iommu_unit->dev_count].dev =
 			msm_iommu_get_ctx(data->iommu_ctxs[i].iommu_ctx_name);
 		if (iommu_unit->dev[iommu_unit->dev_count].dev == NULL) {
 			KGSL_CORE_ERR("Failed to get iommu dev handle for "
 			"device %s\n", data->iommu_ctxs[i].iommu_ctx_name);
-			return -EINVAL;
-		}
-		if (KGSL_IOMMU_CONTEXT_USER != data->iommu_ctxs[i].ctx_id &&
-			KGSL_IOMMU_CONTEXT_PRIV != data->iommu_ctxs[i].ctx_id) {
-			KGSL_CORE_ERR("Invalid context ID defined: %d\n",
-					data->iommu_ctxs[i].ctx_id);
 			return -EINVAL;
 		}
 		iommu_unit->dev[iommu_unit->dev_count].ctx_id =
@@ -775,6 +792,10 @@ static int _get_iommu_ctxs(struct kgsl_mmu *mmu,
 				data->iommu_ctxs[i].iommu_ctx_name);
 
 		iommu_unit->dev_count++;
+	}
+	if (!j) {
+		KGSL_CORE_ERR("No ctxts initialized, user ctxt absent\n ");
+		return -EINVAL;
 	}
 
 	return 0;
@@ -1240,15 +1261,21 @@ static int kgsl_iommu_init(struct kgsl_mmu *mmu)
 	if (status)
 		goto done;
 
-	iommu->iommu_reg_list = kgsl_iommuv1_reg;
-	iommu->ctx_offset = KGSL_IOMMU_CTX_OFFSET_V1;
+	iommu->iommu_reg_list = kgsl_iommuv0_reg;
+	iommu->ctx_offset = KGSL_IOMMU_CTX_OFFSET_V0;
 
+	/*
+	 * Due to not bringing in the iommu rename, iommu_v1 is
+	 * actually iommu_v0.  Keep our internal representation
+	 * constant, but our interface with iommu drive needs the
+	 * correct vixes
+	 */
 	if (msm_soc_version_supports_iommu_v1()) {
+		iommu->iommu_reg_list = kgsl_iommuv0_reg;
+		iommu->ctx_offset = KGSL_IOMMU_CTX_OFFSET_V0;
+	} else {
 		iommu->iommu_reg_list = kgsl_iommuv1_reg;
 		iommu->ctx_offset = KGSL_IOMMU_CTX_OFFSET_V1;
-	} else {
-		iommu->iommu_reg_list = kgsl_iommuv2_reg;
-		iommu->ctx_offset = KGSL_IOMMU_CTX_OFFSET_V2;
 	}
 
 	/* A nop is required in an indirect buffer when switching

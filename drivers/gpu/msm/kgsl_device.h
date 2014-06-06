@@ -208,11 +208,27 @@ struct kgsl_device {
 	unsigned int ver_minor;
 	uint32_t flags;
 	enum kgsl_deviceid id;
+
+	/* Starting physical address for GPU registers */
 	unsigned long reg_phys;
+
+	/* Starting Kernel virtual address for GPU registers */
 	void *reg_virt;
+
+	/* Total memory size for all GPU registers */
 	unsigned int reg_len;
+
+	/* Kernel virtual address for GPU shader memory */
+	void *shader_mem_virt;
+
+	/* Starting physical address for GPU shader memory */
+	unsigned long shader_mem_phys;
+
+	/* GPU shader memory size */
+	unsigned int shader_mem_len;
 	struct kgsl_memdesc memstore;
 	const char *iomemname;
+	const char *shadermemname;
 
 	struct kgsl_mh mh;
 	struct kgsl_mmu mmu;
@@ -262,7 +278,6 @@ struct kgsl_device {
 	int pm_dump_enable;
 	struct kgsl_pwrscale pwrscale;
 	struct kobject pwrscale_kobj;
-	struct pm_qos_request pm_qos_req_dma;
 	struct work_struct ts_expired_ws;
 	struct list_head events;
 	struct list_head events_pending_list;
@@ -325,6 +340,7 @@ struct kgsl_context {
 	struct kref refcount;
 	uint32_t id;
 	pid_t pid;
+	struct kgsl_device_private *dev_priv;
 	unsigned long priv;
 	struct kgsl_device *device;
 	struct kgsl_pagetable *pagetable;
@@ -534,6 +550,7 @@ static inline bool kgsl_context_detached(struct kgsl_context *context)
 static inline struct kgsl_context *kgsl_context_get(struct kgsl_device *device,
 		uint32_t id)
 {
+	int result = 0;
 	struct kgsl_context *context = NULL;
 
 	read_lock(&device->context_lock);
@@ -544,10 +561,12 @@ static inline struct kgsl_context *kgsl_context_get(struct kgsl_device *device,
 	if (kgsl_context_detached(context))
 		context = NULL;
 	else
-		kref_get(&context->refcount);
+		result = kref_get_unless_zero(&context->refcount);
 
 	read_unlock(&device->context_lock);
 
+	if (!result)
+		return NULL;
 	return context;
 }
 
@@ -559,10 +578,12 @@ static inline struct kgsl_context *kgsl_context_get(struct kgsl_device *device,
 * lightweight way to just increase the refcount on a known context rather than
 * walking through kgsl_context_get and searching the iterator
 */
-static inline void _kgsl_context_get(struct kgsl_context *context)
+static inline int _kgsl_context_get(struct kgsl_context *context)
 {
+	int ret = 0;
 	if (context)
-		kref_get(&context->refcount);
+		ret = kref_get_unless_zero(&context->refcount);
+	return ret;
 }
 
 /**

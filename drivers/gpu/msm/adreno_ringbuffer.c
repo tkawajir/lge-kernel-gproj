@@ -397,8 +397,11 @@ int adreno_ringbuffer_start(struct adreno_ringbuffer *rb)
 		return status;
 
 	/* CP ROQ queue sizes (bytes) - RB:16, ST:16, IB1:32, IB2:64 */
-	if (adreno_is_a305(adreno_dev) || adreno_is_a320(adreno_dev))
+	if (adreno_is_a305(adreno_dev) || adreno_is_a305c(adreno_dev) ||
+		adreno_is_a320(adreno_dev))
 		adreno_regwrite(device, REG_CP_QUEUE_THRESHOLDS, 0x000E0602);
+	else if (adreno_is_a330(adreno_dev) || adreno_is_a305b(adreno_dev))
+		adreno_regwrite(device, REG_CP_QUEUE_THRESHOLDS, 0x003E2008);
 
 	rb->rptr = 0;
 	rb->wptr = 0;
@@ -637,6 +640,12 @@ adreno_ringbuffer_addcmds(struct adreno_ringbuffer *rb,
 			KGSL_MEMSTORE_OFFSET(KGSL_MEMSTORE_GLOBAL,
 				eoptimestamp)));
 		GSL_RB_WRITE(ringcmds, rcmd_gpu, rb->global_ts);
+	}
+
+	if (adreno_is_a20x(adreno_dev)) {
+		GSL_RB_WRITE(ringcmds, rcmd_gpu,
+			cp_type3_packet(CP_EVENT_WRITE, 1));
+		GSL_RB_WRITE(ringcmds, rcmd_gpu, CACHE_FLUSH);
 	}
 
 	if (drawctxt || (flags & KGSL_CMD_FLAGS_INTERNAL_ISSUE)) {
@@ -1044,9 +1053,9 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 #endif
 
 done:
-	kgsl_trace_issueibcmds(device, context->id, cmdbatch,
+	kgsl_trace_issueibcmds(device, context ? context->id : 0, cmdbatch,
 		cmdbatch->timestamp, cmdbatch->flags, ret,
-		drawctxt->type);
+		drawctxt ? drawctxt->type : 0);
 
 	kfree(link);
 	return ret;

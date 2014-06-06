@@ -52,8 +52,8 @@ const unsigned int a3xx_registers[] = {
 	0x2240, 0x227e,
 	0x2280, 0x228b, 0x22c0, 0x22c0, 0x22c4, 0x22ce, 0x22d0, 0x22d8,
 	0x22df, 0x22e6, 0x22e8, 0x22e9, 0x22ec, 0x22ec, 0x22f0, 0x22f7,
-	0x22ff, 0x22ff, 0x2340, 0x2343, 0x2348, 0x2349, 0x2350, 0x2356,
-	0x2360, 0x2360, 0x2440, 0x2440, 0x2444, 0x2444, 0x2448, 0x244d,
+	0x22ff, 0x22ff, 0x2340, 0x2343,
+	0x2440, 0x2440, 0x2444, 0x2444, 0x2448, 0x244d,
 	0x2468, 0x2469, 0x246c, 0x246d, 0x2470, 0x2470, 0x2472, 0x2472,
 	0x2474, 0x2475, 0x2479, 0x247a, 0x24c0, 0x24d3, 0x24e4, 0x24ef,
 	0x2500, 0x2509, 0x250c, 0x250c, 0x250e, 0x250e, 0x2510, 0x2511,
@@ -61,8 +61,8 @@ const unsigned int a3xx_registers[] = {
 	0x25f0, 0x25f0,
 	0x2640, 0x267e, 0x2680, 0x268b, 0x26c0, 0x26c0, 0x26c4, 0x26ce,
 	0x26d0, 0x26d8, 0x26df, 0x26e6, 0x26e8, 0x26e9, 0x26ec, 0x26ec,
-	0x26f0, 0x26f7, 0x26ff, 0x26ff, 0x2740, 0x2743, 0x2748, 0x2749,
-	0x2750, 0x2756, 0x2760, 0x2760, 0x300C, 0x300E, 0x301C, 0x301D,
+	0x26f0, 0x26f7, 0x26ff, 0x26ff, 0x2740, 0x2743,
+	0x300C, 0x300E, 0x301C, 0x301D,
 	0x302A, 0x302A, 0x302C, 0x302D, 0x3030, 0x3031, 0x3034, 0x3036,
 	0x303C, 0x303C, 0x305E, 0x305F,
 };
@@ -450,12 +450,16 @@ unsigned int adreno_a3xx_rbbm_clock_ctl_default(struct adreno_device
 {
 	if (adreno_is_a305(adreno_dev))
 		return A305_RBBM_CLOCK_CTL_DEFAULT;
+	else if (adreno_is_a305c(adreno_dev))
+		return A305C_RBBM_CLOCK_CTL_DEFAULT;
 	else if (adreno_is_a320(adreno_dev))
 		return A320_RBBM_CLOCK_CTL_DEFAULT;
 	else if (adreno_is_a330v2(adreno_dev))
 		return A330v2_RBBM_CLOCK_CTL_DEFAULT;
 	else if (adreno_is_a330(adreno_dev))
 		return A330_RBBM_CLOCK_CTL_DEFAULT;
+	else if (adreno_is_a305b(adreno_dev))
+		return A305B_RBBM_CLOCK_CTL_DEFAULT;
 
 	BUG_ON(1);
 }
@@ -3065,6 +3069,29 @@ static struct a3xx_vbif_data a305_vbif[] = {
 	{0, 0},
 };
 
+static struct a3xx_vbif_data a305b_vbif[] = {
+	{ A3XX_VBIF_IN_RD_LIM_CONF0, 0x00181818 },
+	{ A3XX_VBIF_IN_WR_LIM_CONF0, 0x00181818 },
+	{ A3XX_VBIF_OUT_RD_LIM_CONF0, 0x00000018 },
+	{ A3XX_VBIF_OUT_WR_LIM_CONF0, 0x00000018 },
+	{ A3XX_VBIF_DDR_OUT_MAX_BURST, 0x00000303 },
+	{ A3XX_VBIF_ROUND_ROBIN_QOS_ARB, 0x0003 },
+	{0, 0},
+};
+
+static struct a3xx_vbif_data a305c_vbif[] = {
+	{ A3XX_VBIF_IN_RD_LIM_CONF0, 0x00101010 },
+	{ A3XX_VBIF_IN_WR_LIM_CONF0, 0x00101010 },
+	{ A3XX_VBIF_OUT_RD_LIM_CONF0, 0x00000010 },
+	{ A3XX_VBIF_OUT_WR_LIM_CONF0, 0x00000010 },
+	{ A3XX_VBIF_DDR_OUT_MAX_BURST, 0x00000101 },
+	{ A3XX_VBIF_ARB_CTL, 0x00000010 },
+	/* Set up AOOO */
+	{ A3XX_VBIF_OUT_AXI_AOOO_EN, 0x00000007 },
+	{ A3XX_VBIF_OUT_AXI_AOOO, 0x00070007 },
+	{0, 0},
+};
+
 static struct a3xx_vbif_data a320_vbif[] = {
 	/* Set up 16 deep read/write request queues */
 	{ A3XX_VBIF_IN_RD_LIM_CONF0, 0x10101010 },
@@ -3128,10 +3155,6 @@ static struct a3xx_vbif_data a330v2_vbif[] = {
 	{ A3XX_VBIF_DDR_OUT_MAX_BURST, 0x0000303 },
 	/* Set up VBIF_ROUND_ROBIN_QOS_ARB */
 	{ A3XX_VBIF_ROUND_ROBIN_QOS_ARB, 0x0003 },
-	/* Disable VBIF clock gating. This is to enable AXI running
-	 * higher frequency than GPU.
-	 */
-	{ A3XX_VBIF_CLKON, 1 },
 	{0, 0},
 };
 
@@ -3140,10 +3163,12 @@ static struct {
 	struct a3xx_vbif_data *vbif;
 } a3xx_vbif_platforms[] = {
 	{ adreno_is_a305, a305_vbif },
+	{ adreno_is_a305c, a305c_vbif },
 	{ adreno_is_a320, a320_vbif },
 	/* A330v2 needs to be ahead of A330 so the right device matches */
 	{ adreno_is_a330v2, a330v2_vbif },
 	{ adreno_is_a330, a330_vbif },
+	{ adreno_is_a305b, a305b_vbif },
 };
 
 static void a3xx_perfcounter_init(struct adreno_device *adreno_dev)
@@ -3239,7 +3264,8 @@ static void a3xx_start(struct adreno_device *adreno_dev)
 			A330_RBBM_GPR0_CTL_DEFAULT);
 
 	/* Set the OCMEM base address for A330 */
-	if (adreno_is_a330(adreno_dev)) {
+	if (adreno_is_a330(adreno_dev) ||
+		adreno_is_a305b(adreno_dev)) {
 		adreno_regwrite(device, A3XX_RB_GMEM_BASE_ADDR,
 			(unsigned int)(adreno_dev->ocmem_base >> 14));
 	}

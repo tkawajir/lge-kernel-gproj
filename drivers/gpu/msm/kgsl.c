@@ -19,7 +19,6 @@
 #include <linux/uaccess.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
-#include <linux/android_pmem.h>
 #include <linux/vmalloc.h>
 #include <linux/pm_runtime.h>
 #include <linux/genlock.h>
@@ -438,7 +437,7 @@ int kgsl_context_init(struct kgsl_device_private *dev_priv,
 	kref_init(&context->refcount);
 	context->device = dev_priv->device;
 	context->pagetable = dev_priv->process_priv->pagetable;
-
+	context->dev_priv = dev_priv;
 	context->pid = dev_priv->process_priv->pid;
 
 	ret = kgsl_sync_timeline_create(context);
@@ -617,7 +616,7 @@ static int kgsl_suspend_device(struct kgsl_device *device, pm_message_t state)
 			INIT_COMPLETION(device->hwaccess_gate);
 			device->ftbl->suspend_context(device);
 			device->ftbl->stop(device);
-			pm_qos_update_request(&device->pm_qos_req_dma,
+			pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
 						PM_QOS_DEFAULT_VALUE);
 			kgsl_pwrctrl_set_state(device, KGSL_STATE_SUSPEND);
 			break;
@@ -812,9 +811,9 @@ static void kgsl_destroy_process_private(struct kref *kref)
 		debugfs_remove_recursive(private->debug_root);
 
 	while (1) {
-		rcu_read_lock();
+		spin_lock(&private->mem_lock);
 		entry = idr_get_next(&private->mem_idr, &next);
-		rcu_read_unlock();
+		spin_unlock(&private->mem_lock);
 		if (entry == NULL)
 			break;
 		kgsl_mem_entry_put(entry);
@@ -825,8 +824,8 @@ static void kgsl_destroy_process_private(struct kref *kref)
 		 */
 		next = 0;
 	}
-	kgsl_mmu_putpagetable(private->pagetable);
 	idr_destroy(&private->mem_idr);
+	kgsl_mmu_putpagetable(private->pagetable);
 
 	kfree(private);
 	return;
@@ -958,8 +957,7 @@ static int kgsl_release(struct inode *inodep, struct file *filep)
 		if (context == NULL)
 			break;
 
-
-		if (context->pid == private->pid) {
+		if (context->dev_priv == dev_priv) {
 			/*
 			 * Hold a reference to the context in case somebody
 			 * tries to put it while we are detaching
@@ -1129,7 +1127,8 @@ kgsl_sharedmem_find_region(struct kgsl_process_private *private,
 		entry = rb_entry(node, struct kgsl_mem_entry, node);
 
 		if (kgsl_gpuaddr_in_memdesc(&entry->memdesc, gpuaddr, size)) {
-			kgsl_mem_entry_get(entry);
+			if (!kgsl_mem_entry_get(entry))
+				break;
 			spin_unlock(&private->mem_lock);
 			return entry;
 		}
@@ -1229,14 +1228,17 @@ kgsl_sharedmem_region_empty(struct kgsl_process_private *private,
 static inline struct kgsl_mem_entry * __must_check
 kgsl_sharedmem_find_id(struct kgsl_process_private *process, unsigned int id)
 {
+	int result = 0;
 	struct kgsl_mem_entry *entry;
 
-	rcu_read_lock();
+	spin_lock(&process->mem_lock);
 	entry = idr_find(&process->mem_idr, id);
 	if (entry)
-		kgsl_mem_entry_get(entry);
-	rcu_read_unlock();
+		result = kgsl_mem_entry_get(entry);
+	spin_unlock(&process->mem_lock);
 
+	if (!result)
+		return NULL;
 	return entry;
 }
 
@@ -2259,11 +2261,10 @@ static int kgsl_get_phys_file(int fd, unsigned long *start, unsigned long *len,
 	dev_t rdev;
 	struct fb_info *info;
 
+	*start = 0;
+	*vstart = 0;
+	*len = 0;
 	*filep = NULL;
-#ifdef CONFIG_ANDROID_PMEM
-	if (!get_pmem_file(fd, start, vstart, len, filep))
-		return 0;
-#endif
 
 	fbfile = fget(fd);
 	if (fbfile == NULL) {
@@ -2354,9 +2355,6 @@ static int kgsl_setup_phys_file(struct kgsl_mem_entry *entry,
 
 	return 0;
 err:
-#ifdef CONFIG_ANDROID_PMEM
-	put_pmem_file(filep);
-#endif
 	return ret;
 }
 
@@ -2577,6 +2575,8 @@ static int kgsl_setup_ion(struct kgsl_mem_entry *entry,
 		entry->memdesc.size += s->length;
 		entry->memdesc.sglen++;
 	}
+
+	entry->memdesc.size = PAGE_ALIGN(entry->memdesc.size);
 
 	return 0;
 err:
@@ -3384,7 +3384,11 @@ unlock:
 		mutex_unlock(&dev_priv->device->mutex);
 	}
 
-	if (ret == 0 && (cmd & IOC_OUT)) {
+	/*
+	 * Still copy back on failure, but assume function took
+	 * all necessary precautions sanitizing the return values.
+	 */
+	if (cmd & IOC_OUT) {
 		if (copy_to_user((void __user *) arg, uptr, _IOC_SIZE(cmd)))
 			ret = -EFAULT;
 	}
@@ -3434,7 +3438,8 @@ kgsl_mmap_memstore(struct kgsl_device *device, struct vm_area_struct *vma)
 static void kgsl_gpumem_vm_open(struct vm_area_struct *vma)
 {
 	struct kgsl_mem_entry *entry = vma->vm_private_data;
-	kgsl_mem_entry_get(entry);
+	if (!kgsl_mem_entry_get(entry))
+		vma->vm_private_data = NULL;
 }
 
 static int
@@ -3442,6 +3447,8 @@ kgsl_gpumem_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct kgsl_mem_entry *entry = vma->vm_private_data;
 
+	if (!entry)
+		return VM_FAULT_SIGBUS;
 	if (!entry->memdesc.ops || !entry->memdesc.ops->vmfault)
 		return VM_FAULT_SIGBUS;
 
@@ -3452,6 +3459,9 @@ static void
 kgsl_gpumem_vm_close(struct vm_area_struct *vma)
 {
 	struct kgsl_mem_entry *entry  = vma->vm_private_data;
+
+	if (!entry)
+		return;
 
 	entry->memdesc.useraddr = 0;
 	kgsl_mem_entry_put(entry);
@@ -3530,7 +3540,7 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 	if (ret)
 		return ret;
 
-	if (!kgsl_memdesc_use_cpu_map(&entry->memdesc) || (flags & MAP_FIXED)) {
+	if (!kgsl_memdesc_use_cpu_map(&entry->memdesc)) {
 		/*
 		 * If we're not going to use the same mapping on the gpu,
 		 * any address is fine.
@@ -3629,7 +3639,7 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 		} else {
 			ret = -EBUSY;
 		}
-	} while (mmap_range_valid(addr, len));
+	} while (!(flags & MAP_FIXED) && mmap_range_valid(addr, len));
 
 	if (IS_ERR_VALUE(ret))
 		KGSL_MEM_ERR(device,
@@ -3842,6 +3852,33 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 	device->reg_phys = res->start;
 	device->reg_len = resource_size(res);
 
+	/*
+	 * Check if a shadermemname is defined, and then get shader memory
+	 * details including shader memory starting physical address
+	 * and shader memory length
+	 */
+	if (device->shadermemname != NULL) {
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						device->shadermemname);
+
+		if (res == NULL) {
+			KGSL_DRV_ERR(device,
+			"Shader memory: platform_get_resource_byname failed\n");
+		}
+
+		else {
+			device->shader_mem_phys = res->start;
+			device->shader_mem_len = resource_size(res);
+		}
+
+		if (!devm_request_mem_region(device->dev,
+					device->shader_mem_phys,
+					device->shader_mem_len,
+						device->name)) {
+			KGSL_DRV_ERR(device, "request_mem_region_failed\n");
+		}
+	}
+
 	if (!devm_request_mem_region(device->dev, device->reg_phys,
 				device->reg_len, device->name)) {
 		KGSL_DRV_ERR(device, "request_mem_region failed\n");
@@ -3910,7 +3947,8 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 		goto error_close_mmu;
 	}
 
-	pm_qos_add_request(&device->pm_qos_req_dma, PM_QOS_CPU_DMA_LATENCY,
+	pm_qos_add_request(&device->pwrctrl.pm_qos_req_dma,
+				PM_QOS_CPU_DMA_LATENCY,
 				PM_QOS_DEFAULT_VALUE);
 
 	/* Initalize the snapshot engine */
@@ -3954,13 +3992,13 @@ int kgsl_postmortem_dump(struct kgsl_device *device, int manual)
 	}
 
 	if (device->pm_dump_enable) {
-
-		KGSL_LOG_DUMP(device,
-				"POWER: FLAGS = %08lX | ACTIVE POWERLEVEL = %08X",
-				pwr->power_flags, pwr->active_pwrlevel);
-
 		KGSL_LOG_DUMP(device, "POWER: INTERVAL TIMEOUT = %08X ",
 				pwr->interval_timeout);
+		KGSL_LOG_DUMP(device, "POWER: NAP ALLOWED = %d | START_STOP_SLEEP_WAKE = %d\n",
+				pwr->nap_allowed, pwr->strtstp_sleepwake);
+
+		KGSL_LOG_DUMP(device, "GRP_CLK = %lu ",
+				  kgsl_get_clkrate(pwr->grp_clks[0]));
 
 	}
 
@@ -4007,7 +4045,7 @@ void kgsl_device_platform_remove(struct kgsl_device *device)
 
 	kgsl_pwrctrl_uninit_sysfs(device);
 
-	pm_qos_remove_request(&device->pm_qos_req_dma);
+	pm_qos_remove_request(&device->pwrctrl.pm_qos_req_dma);
 
 	idr_destroy(&device->context_idr);
 
