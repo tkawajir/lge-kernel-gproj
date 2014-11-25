@@ -35,6 +35,7 @@ extern u32 dbg_force_ov1_blt;
 extern u64 mdp_max_bw;
 extern u32 mdp_bw_ab_factor;
 extern u32 mdp_bw_ib_factor;
+extern u32 mdp_iommu_max_map_size;
 #define MDP4_BW_AB_DEFAULT_FACTOR (115)	/* 1.15 */
 #define MDP4_BW_IB_DEFAULT_FACTOR (150)	/* 1.5 */
 #define MDP_BUS_SCALE_AB_STEP (0x4000000)
@@ -382,7 +383,6 @@ struct mdp4_overlay_pipe {
 	uint32 blt_ov_done;
 	uint32 blt_dmap_koff;
 	uint32 blt_dmap_done;
-	uint32 blt_forced;
 	uint32 req_clk;
 	uint64 bw_ab_quota;
 	uint64 bw_ib_quota;
@@ -938,7 +938,6 @@ int mdp4_writeback_queue_buffer(struct fb_info *info,
 void mdp4_writeback_dma_stop(struct msm_fb_data_type *mfd);
 int mdp4_writeback_init(struct fb_info *info);
 int mdp4_writeback_terminate(struct fb_info *info);
-int mdp4_writeback_set_mirroring_hint(struct fb_info *info, int hint);
 
 uint32_t mdp_block2base(uint32_t block);
 int mdp_hist_lut_config(struct mdp_hist_lut_data *data);

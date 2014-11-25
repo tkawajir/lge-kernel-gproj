@@ -37,11 +37,11 @@ int find_vdd_level(struct clk *clk, unsigned long rate)
 {
 	int level;
 
-	for (level = 0; level < ARRAY_SIZE(clk->fmax); level++)
+	for (level = 0; level < clk->num_fmax; level++)
 		if (rate <= clk->fmax[level])
 			break;
 
-	if (level == ARRAY_SIZE(clk->fmax)) {
+	if (level == clk->num_fmax) {
 		pr_err("Rate %lu for %s is greater than highest Fmax\n", rate,
 			clk->dbg_name);
 		return -EINVAL;
@@ -55,7 +55,7 @@ static int update_vdd(struct clk_vdd_class *vdd_class)
 {
 	int level, rc;
 
-	for (level = ARRAY_SIZE(vdd_class->level_votes)-1; level > 0; level--)
+	for (level = vdd_class->num_levels-1; level > 0; level--)
 		if (vdd_class->level_votes[level])
 			break;
 
@@ -72,15 +72,17 @@ static int update_vdd(struct clk_vdd_class *vdd_class)
 /* Vote for a voltage level. */
 int vote_vdd_level(struct clk_vdd_class *vdd_class, int level)
 {
-	unsigned long flags;
 	int rc;
 
-	spin_lock_irqsave(&vdd_class->lock, flags);
+	if (level >= vdd_class->num_levels)
+		return -EINVAL;
+
+	mutex_lock(&vdd_class->lock);
 	vdd_class->level_votes[level]++;
 	rc = update_vdd(vdd_class);
 	if (rc)
 		vdd_class->level_votes[level]--;
-	spin_unlock_irqrestore(&vdd_class->lock, flags);
+	mutex_unlock(&vdd_class->lock);
 
 	return rc;
 }
@@ -88,10 +90,12 @@ int vote_vdd_level(struct clk_vdd_class *vdd_class, int level)
 /* Remove vote for a voltage level. */
 int unvote_vdd_level(struct clk_vdd_class *vdd_class, int level)
 {
-	unsigned long flags;
 	int rc = 0;
 
-	spin_lock_irqsave(&vdd_class->lock, flags);
+	if (level >= vdd_class->num_levels)
+		return -EINVAL;
+
+	mutex_lock(&vdd_class->lock);
 	if (WARN(!vdd_class->level_votes[level],
 			"Reference counts are incorrect for %s level %d\n",
 			vdd_class->class_name, level))
@@ -101,7 +105,7 @@ int unvote_vdd_level(struct clk_vdd_class *vdd_class, int level)
 	if (rc)
 		vdd_class->level_votes[level]++;
 out:
-	spin_unlock_irqrestore(&vdd_class->lock, flags);
+	mutex_unlock(&vdd_class->lock);
 	return rc;
 }
 

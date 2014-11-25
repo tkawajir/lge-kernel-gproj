@@ -329,6 +329,28 @@ int msm_fb_detect_client(const char *name)
 	return ret;
 }
 
+static ssize_t msm_fb_fps_level_change(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct msm_fb_panel_data *pdata =
+		(struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if ((val <= 0) || (val > 100))
+		return -EINVAL;
+	if (pdata->fps_level_change)
+		pdata->fps_level_change(mfd->pdev, (u32)val);
+	return count;
+}
+
 static ssize_t msm_fb_msm_fb_type(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
@@ -419,11 +441,14 @@ static DEVICE_ATTR(hrz_mode, S_IRUGO | S_IWUGO,
 
 
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, msm_fb_msm_fb_type, NULL);
+static DEVICE_ATTR(msm_fb_fps_level, S_IRUGO | S_IWUGO, NULL, \
+				msm_fb_fps_level_change);
 static struct attribute *msm_fb_attrs[] = {
 #ifdef CONFIG_HRZ_II
 	&dev_attr_hrz_mode.attr,
 #endif
 	&dev_attr_msm_fb_type.attr,
+	&dev_attr_msm_fb_fps_level.attr,
 	NULL,
 };
 static struct attribute_group msm_fb_attr_group = {
@@ -512,6 +537,11 @@ static int msm_fb_probe(struct platform_device *pdev)
 	rc = msm_fb_register(mfd);
 	if (rc)
 		return rc;
+
+	mfd->panel_info.xres_aligned = ALIGN(mfd->panel_info.xres, 64);
+	mfd->panel_info.yres_aligned = ALIGN(mfd->panel_info.yres, 64);
+	mfd->max_map_size = mfd->panel_info.xres_aligned * mfd->panel_info.yres_aligned * 4 * 2;
+
 	err = pm_runtime_set_active(mfd->fbi->dev);
 	if (err < 0)
 		printk(KERN_ERR "[LCD][DEBUG] pm_runtime: fail to set active.\n");
@@ -2104,12 +2134,17 @@ static int msm_fb_pan_display_ex(struct fb_info *info,
 	struct fb_var_screeninfo *var = &disp_commit->var;
 	u32 wait_for_finish = disp_commit->wait_for_finish;
 	int ret = 0;
-
 	if (disp_commit->flags &
 		MDP_DISPLAY_COMMIT_OVERLAY) {
 		if (!mfd->panel_power_on) /* suspended */
 			return -EPERM;
 	} else {
+	        /*
+                WFD panel info was not getting updated,
+		in case of resolution other than 1280x720
+                */
+                mfd->var_xres = info->var.xres;
+                mfd->var_yres = info->var.yres;
 		/*
 		 * If framebuffer is 2, io pan display is not allowed.
 		 */
@@ -3634,29 +3669,6 @@ static int msmfb_overlay_ioctl_writeback_terminate(struct fb_info *info)
 	return mdp4_writeback_terminate(info);
 }
 
-static int msmfb_overlay_ioctl_writeback_set_mirr_hint(struct fb_info *
-		info, void *argp)
-{
-	int ret = 0, hint;
-
-	if (!info) {
-		ret = -EINVAL;
-		goto error;
-	}
-
-	ret = copy_from_user(&hint, argp, sizeof(hint));
-	if (ret)
-		goto error;
-
-	ret = mdp4_writeback_set_mirroring_hint(info, hint);
-	if (ret)
-		goto error;
-error:
-	if (ret)
-		pr_err("%s: ioctl failed\n", __func__);
-	return ret;
-}
-
 #else
 static int msmfb_overlay_ioctl_writeback_init(struct fb_info *info)
 {
@@ -3686,12 +3698,6 @@ static int msmfb_overlay_ioctl_writeback_dequeue_buffer(
 	return -ENOTSUPP;
 }
 static int msmfb_overlay_ioctl_writeback_terminate(struct fb_info *info)
-{
-	return -ENOTSUPP;
-}
-
-static int msmfb_overlay_ioctl_writeback_set_mirr_hint(struct fb_info *
-		info, void *argp)
 {
 	return -ENOTSUPP;
 }
@@ -4107,10 +4113,6 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		break;
 	case MSMFB_WRITEBACK_TERMINATE:
 		ret = msmfb_overlay_ioctl_writeback_terminate(info);
-		break;
-	case MSMFB_WRITEBACK_SET_MIRRORING_HINT:
-		ret = msmfb_overlay_ioctl_writeback_set_mirr_hint(
-				info, argp);
 		break;
 #endif
 	case MSMFB_VSYNC_CTRL:

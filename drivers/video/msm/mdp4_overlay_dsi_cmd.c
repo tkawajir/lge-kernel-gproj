@@ -251,7 +251,23 @@ void mdp4_dsi_cmd_pipe_queue(int cndx, struct mdp4_overlay_pipe *pipe)
 	mdp4_stat.overlay_play[pipe->mixer_num]++;
 }
 
+static void mdp4_dsi_cmd_pipe_clean(struct vsync_update *vp)
+{
+	struct mdp4_overlay_pipe *pipe;
+	int i;
+
+	pipe = vp->plist;
+	for (i = 0; i < OVERLAY_PIPE_MAX; i++, pipe++) {
+		if (pipe->pipe_used) {
+			mdp4_overlay_iommu_pipe_free(pipe->pipe_ndx, 0);
+			pipe->pipe_used = 0; /* clear */
+		}
+	}
+	vp->update_cnt = 0;     /* empty queue */
+}
+
 static void mdp4_dsi_cmd_blt_ov_update(struct mdp4_overlay_pipe *pipe);
+static int mdp4_dsi_cmd_clk_check(struct vsycn_ctrl *vctrl);
 
 int mdp4_dsi_cmd_pipe_commit(int cndx, int wait, u32 *release_busy)
 {
@@ -274,6 +290,8 @@ int mdp4_dsi_cmd_pipe_commit(int cndx, int wait, u32 *release_busy)
 	pipe = vctrl->base_pipe;
 	mixer = pipe->mixer_num;
 
+	mdp_update_pm(vctrl->mfd, vctrl->vsync_time);
+
 	/*
 	 * allow stage_commit without pipes queued
 	 * (vp->update_cnt == 0) to unstage pipes after
@@ -287,6 +305,12 @@ int mdp4_dsi_cmd_pipe_commit(int cndx, int wait, u32 *release_busy)
 		vctrl->blt_free--;
 		if (vctrl->blt_free == 0)
 			mdp4_free_writeback_buf(vctrl->mfd, mixer);
+	}
+
+	if (mdp4_dsi_cmd_clk_check(vctrl) < 0) {
+		mdp4_dsi_cmd_pipe_clean(vp);
+		mutex_unlock(&vctrl->update_lock);
+		return 0;
 	}
 	mutex_unlock(&vctrl->update_lock);
 
@@ -740,6 +764,7 @@ void mdp4_mipi_vsync_enable(struct msm_fb_data_type *mfd,
 
 	tear_en = (1 << which);
 
+	mdp_clk_ctrl(1);
 	if ((mfd->use_mdp_vsync) && (mfd->ibuf.vsync_enable) &&
 		(mfd->panel_info.lcd.vsync_enable)) {
 
@@ -761,6 +786,7 @@ void mdp4_mipi_vsync_enable(struct msm_fb_data_type *mfd,
 		data &= ~tear_en;
 		MDP_OUTP(MDP_BASE + 0x20c, data);
 	}
+	mdp_clk_ctrl(0);
 }
 
 void mdp4_dsi_cmd_free_base_pipe(struct msm_fb_data_type *mfd)
@@ -1104,7 +1130,8 @@ int mdp4_dsi_cmd_off(struct platform_device *pdev)
 		 * pipe's iommu will be freed at next overlay play
 		 * and iommu_drop statistic will be increased by one
 		 */
-		vp->update_cnt = 0;     /* empty queue */
+		pr_warn("%s: update_cnt=%d\n", __func__, vp->update_cnt);
+		mdp4_dsi_cmd_pipe_clean(vp);
 	}
 
 	if (pipe) {
@@ -1144,30 +1171,14 @@ int mdp4_dsi_cmd_off(struct platform_device *pdev)
 	return ret;
 }
 
-void mdp4_dsi_cmd_overlay(struct msm_fb_data_type *mfd)
+static int mdp4_dsi_cmd_clk_check(struct vsycn_ctrl *vctrl)
 {
-	int cndx = 0;
-	struct vsycn_ctrl *vctrl;
-	struct mdp4_overlay_pipe *pipe;
-	unsigned long flags;
 	int clk_set_on = 0;
+	unsigned long flags;
 
-	vctrl = &vsync_ctrl_db[cndx];
-
-	if (!mfd->panel_power_on)
-		return;
-
-	pipe = vctrl->base_pipe;
-	if (pipe == NULL) {
-		pr_err("%s: NO base pipe\n", __func__);
-		return;
-	}
-
-	mutex_lock(&vctrl->update_lock);
 	if (atomic_read(&vctrl->suspend)) {
-		mutex_unlock(&vctrl->update_lock);
 		pr_err("%s: suspended, no more pan display\n", __func__);
-		return;
+		return -EPERM;
 	}
 
 	spin_lock_irqsave(&vctrl->spin_lock, flags);
@@ -1187,7 +1198,29 @@ void mdp4_dsi_cmd_overlay(struct msm_fb_data_type *mfd)
 		vsync_irq_enable(INTR_PRIMARY_RDPTR, MDP_PRIM_RDPTR_TERM);
 	}
 
-	mutex_unlock(&vctrl->update_lock);
+	return 0;
+}
+
+void mdp4_dsi_cmd_overlay(struct msm_fb_data_type *mfd)
+{
+	int cndx = 0;
+	struct vsycn_ctrl *vctrl;
+	struct mdp4_overlay_pipe *pipe;
+
+	mutex_lock(&mfd->dma->ov_mutex);
+	vctrl = &vsync_ctrl_db[cndx];
+
+	if (!mfd->panel_power_on) {
+		mutex_unlock(&mfd->dma->ov_mutex);
+		return;
+	}
+
+	pipe = vctrl->base_pipe;
+	if (pipe == NULL) {
+		pr_err("%s: NO base pipe\n", __func__);
+		mutex_unlock(&mfd->dma->ov_mutex);
+		return;
+	}
 
 	if (pipe->mixer_stage == MDP4_MIXER_STAGE_BASE) {
 		mdp4_mipi_vsync_enable(mfd, pipe, 0);
