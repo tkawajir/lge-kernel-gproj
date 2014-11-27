@@ -567,6 +567,7 @@ static void __init reserve_ion_memory(void)
 						0,
 						0xb0000000);
 			}
+		}
 	}
 
 	if (!fixed_size)
