@@ -48,6 +48,9 @@
 #define PRI_SRC_SEL_HFPLL	1
 #define PRI_SRC_SEL_HFPLL_DIV2	2
 
+#define HFPLL_MIN_VDD		 775000
+#define HFPLL_MAX_VDD		1300000
+
 #define SECCLKAGD		BIT(4)
 
 int g_speed_bin;
@@ -926,7 +929,7 @@ ssize_t acpuclk_set_vdd(char *buf) {
 #endif
 
 #ifdef CONFIG_CPU_FREQ_MSM
-static struct cpufreq_frequency_table freq_table[NR_CPUS][35];
+static struct cpufreq_frequency_table freq_table[NR_CPUS][42];
 
 static void __init cpufreq_table_init(void)
 {
@@ -1039,18 +1042,8 @@ static int __init get_speed_bin(u32 pte_efuse)
 {
 	uint32_t speed_bin;
 
-	speed_bin = pte_efuse & 0xF;
-	if (speed_bin == 0xF)
-		speed_bin = (pte_efuse >> 4) & 0xF;
-
-	if (speed_bin == 0xF) {
-		speed_bin = 0;
-		dev_warn(drv.dev, "SPEED BIN: Defaulting to %d\n", speed_bin);
-	} else {
-		dev_info(drv.dev, "SPEED BIN: %d\n", speed_bin);
-	}
-
-	g_speed_bin = speed_bin;
+	speed_bin = 1;
+	dev_info(drv.dev, "SPEED BIN: %d\n", speed_bin);
 
 	return speed_bin;
 }
@@ -1059,18 +1052,8 @@ static int __init get_pvs_bin(u32 pte_efuse)
 {
 	uint32_t pvs_bin;
 
-	pvs_bin = (pte_efuse >> 10) & 0x7;
-	if (pvs_bin == 0x7)
-		pvs_bin = (pte_efuse >> 13) & 0x7;
-
-	if (pvs_bin == 0x7) {
-		pvs_bin = 0;
-		dev_warn(drv.dev, "ACPU PVS: Defaulting to %d\n", pvs_bin);
-	} else {
-		dev_info(drv.dev, "ACPU PVS: %d\n", pvs_bin);
-	}
-
-	g_pvs_bin = pvs_bin;
+	pvs_bin = 1;
+	dev_info(drv.dev, "ACPU PVS: %d\n", pvs_bin);
 
 	return pvs_bin;
 }
