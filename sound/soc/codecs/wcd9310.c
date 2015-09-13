@@ -3973,8 +3973,7 @@ EXPORT_SYMBOL(tabla_write);
 #ifndef CONFIG_SOUND_CONTROL_HAX_GPL
 static
 #endif
-
-static unsigned int tabla_read(struct snd_soc_codec *codec,
+unsigned int tabla_read(struct snd_soc_codec *codec,
 				unsigned int reg)
 {
 	unsigned int val;
